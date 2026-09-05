@@ -270,9 +270,7 @@ elif modulo.startswith("🗺️"):
     st.markdown("---")
     st.subheader("Detalle por departamento")
     st.dataframe(
-        dep_df.sort_values("% Riesgo Alto", ascending=False)
-        .reset_index(drop=True)
-        .style.background_gradient(subset=["% Riesgo Alto"], cmap="RdYlGn_r"),
+        dep_df.sort_values("% Riesgo Alto", ascending=False).reset_index(drop=True),
         use_container_width=True,
         height=400,
     )
@@ -354,8 +352,7 @@ elif modulo.startswith("📈"):
         tabla.columns = ["Categoría", "Registros", "% Riesgo Alto"]
         tabla["% Riesgo Alto"] = tabla["% Riesgo Alto"].round(1)
         st.dataframe(
-            tabla.reset_index(drop=True)
-            .style.background_gradient(subset=["% Riesgo Alto"], cmap="RdYlGn_r"),
+            tabla.reset_index(drop=True),
             use_container_width=True,
             height=max(300, len(var_df) * 38 + 40),
         )
@@ -435,13 +432,8 @@ elif modulo.startswith("📋"):
         "PROB_RIESGO_ALTO": "Prob. Riesgo Alto (%)",
     })
 
-    def color_riesgo(val):
-        if val == 1:
-            return "background-color: #FFEBEE; color: #C62828; font-weight: bold"
-        return "background-color: #E8F5E9; color: #2E7D32; font-weight: bold"
-
     st.dataframe(
-        df_show.reset_index(drop=True).style.applymap(color_riesgo, subset=["Riesgo"]),
+        df_show.reset_index(drop=True),
         use_container_width=True,
         height=520,
     )
