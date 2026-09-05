@@ -6,8 +6,6 @@ Trabajo Aplicado — Diplomado en Ciencia de Datos · SNIES 2023
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
-import json
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -56,22 +54,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Carga de datos y artefactos ──────────────────────────────────────────────
-@st.cache_data
-def cargar_datos():
-    df = pd.read_csv("SNIES_dataset_modelado_2023.csv")
-    return df
-
-@st.cache_resource
-def cargar_artefactos():
-    modelo  = joblib.load("modelo_bosque.joblib")
-    encoder = joblib.load("encoder.joblib")
-    with open("columnas_modelo.json", encoding="utf-8") as f:
-        columnas = json.load(f)
-    return modelo, encoder, columnas
-
-df = cargar_datos()
-modelo, encoder, COLUMNAS = cargar_artefactos()
+# ── Paleta de colores ────────────────────────────────────────────────────────
+COLOR_ALTO   = "#C62828"
+COLOR_BAJO   = "#2E7D32"
+COLOR_AZUL   = "#1565C0"
+SCALE_RIESGO = [[0.0, "#E8F5E9"], [0.5, "#FFF9C4"], [1.0, "#B71C1C"]]
 
 COLS_CAT = [
     "SECTOR IES", "NIVEL DE FORMACIÓN", "NIVEL ACADÉMICO", "MODALIDAD",
@@ -80,17 +67,19 @@ COLS_CAT = [
 ]
 COLS_NUM = ["MATRICULADOS", "MATRICULADOS PRIMER CURSO", "SEMESTRE"]
 
-# Extraer categorías válidas del encoder (excluye NaN)
-OPCIONES = {
-    col: [c for c in cats if isinstance(c, str)]
-    for col, cats in zip(COLS_CAT, encoder.categories_)
-}
+# ── Carga de datos ───────────────────────────────────────────────────────────
+@st.cache_data
+def cargar_datos():
+    df = pd.read_csv("SNIES_dataset_con_predicciones.csv")
+    return df
 
-# Paleta de colores del dashboard
-COLOR_ALTO  = "#C62828"
-COLOR_BAJO  = "#2E7D32"
-COLOR_AZUL  = "#1565C0"
-SCALE_RIESGO = [[0.0, "#E8F5E9"], [0.5, "#FFF9C4"], [1.0, "#B71C1C"]]
+df = cargar_datos()
+
+# Categorías válidas extraídas del propio dataset
+OPCIONES = {
+    col: sorted(df[col].dropna().unique().tolist())
+    for col in COLS_CAT
+}
 
 # ── Navegación lateral ───────────────────────────────────────────────────────
 st.sidebar.image(
@@ -328,7 +317,6 @@ elif modulo.startswith("📈"):
     col_chart, col_stats = st.columns([2, 1])
 
     with col_chart:
-        # Barras apiladas
         fig_stack = go.Figure()
         fig_stack.add_trace(go.Bar(
             name="Riesgo ALTO",
@@ -431,7 +419,7 @@ elif modulo.startswith("📋"):
         "DEPARTAMENTO DE OFERTA DEL PROGRAMA", "MODALIDAD",
         "NIVEL DE FORMACIÓN", "ÁREA DE CONOCIMIENTO",
         "SECTOR IES", "IES ACREDITADA", "PROGRAMA ACREDITADO",
-        "MATRICULADOS", "TASA_NO_GRADUACION", "RIESGO_DESERCION",
+        "MATRICULADOS", "TASA_NO_GRADUACION", "RIESGO_DESERCION", "PROB_RIESGO_ALTO",
     ]
     df_show = df_fil[cols_mostrar].copy()
     df_show["TASA_NO_GRADUACION"] = (df_show["TASA_NO_GRADUACION"] * 100).round(1)
@@ -444,6 +432,7 @@ elif modulo.startswith("📋"):
         "PROGRAMA ACREDITADO": "Acred. Prog.",
         "TASA_NO_GRADUACION": "Tasa No Grad. (%)",
         "RIESGO_DESERCION": "Riesgo",
+        "PROB_RIESGO_ALTO": "Prob. Riesgo Alto (%)",
     })
 
     def color_riesgo(val):
@@ -472,8 +461,9 @@ elif modulo.startswith("📋"):
 elif modulo.startswith("🔮"):
     st.title("🔮 Predicción Individual")
     st.markdown(
-        '<p class="section-note">Ingresa el perfil de un programa para obtener '
-        "la predicción del modelo de bosque aleatorio.</p>",
+        '<p class="section-note">Selecciona el perfil de un programa para consultar '
+        "la probabilidad de riesgo estimada por el modelo de Bosque Aleatorio "
+        "(predicciones pre-calculadas sobre el dataset SNIES 2023).</p>",
         unsafe_allow_html=True,
     )
 
@@ -510,71 +500,99 @@ elif modulo.startswith("🔮"):
         with cn3:
             semestre = st.selectbox("Semestre", [1, 2])
 
-        submitted = st.form_submit_button("🔍 Predecir riesgo", use_container_width=True)
+        submitted = st.form_submit_button("🔍 Consultar riesgo", use_container_width=True)
 
     if submitted:
-        # Construir fila de entrada
-        X_cat = pd.DataFrame(
-            [[sector, nivel_form, nivel_acad, modalidad, area,
-              caracter, ies_acred, prog_acred, sexo, departamento]],
-            columns=COLS_CAT,
-        )
-        X_cat_enc = encoder.transform(X_cat)
-        X_num = np.array([[matriculados, primer_curso, semestre]])
-        X_input = np.hstack([X_cat_enc, X_num])
+        # Buscar registros similares en el dataset (coincidencia exacta en variables categóricas)
+        filtros = {
+            "SECTOR IES": sector,
+            "NIVEL DE FORMACIÓN": nivel_form,
+            "NIVEL ACADÉMICO": nivel_acad,
+            "MODALIDAD": modalidad,
+            "ÁREA DE CONOCIMIENTO": area,
+            "CARÁCTER IES": caracter,
+            "IES ACREDITADA": ies_acred,
+            "PROGRAMA ACREDITADO": prog_acred,
+            "SEXO": sexo,
+            "DEPARTAMENTO DE OFERTA DEL PROGRAMA": departamento,
+        }
 
-        # Reordenar columnas según el orden de entrenamiento
-        df_input = pd.DataFrame(X_input, columns=COLS_CAT + COLS_NUM)
-        df_input = df_input[COLUMNAS]
+        mask = pd.Series([True] * len(df), index=df.index)
+        for col, val in filtros.items():
+            mask = mask & (df[col] == val)
 
-        pred  = modelo.predict(df_input)[0]
-        proba = modelo.predict_proba(df_input)[0]
-        prob_alto = proba[1] * 100
-        prob_bajo = proba[0] * 100
+        df_similar = df[mask]
+
+        # Si no hay coincidencia exacta, relajar a las 7 variables más importantes
+        if len(df_similar) == 0:
+            cols_principales = [
+                "SECTOR IES", "NIVEL DE FORMACIÓN", "MODALIDAD",
+                "ÁREA DE CONOCIMIENTO", "DEPARTAMENTO DE OFERTA DEL PROGRAMA",
+                "CARÁCTER IES", "NIVEL ACADÉMICO",
+            ]
+            mask2 = pd.Series([True] * len(df), index=df.index)
+            for col in cols_principales:
+                mask2 = mask2 & (df[col] == filtros[col])
+            df_similar = df[mask2]
+            nivel_coincidencia = "aproximada (7 variables principales)"
+        else:
+            nivel_coincidencia = "exacta (10 variables)"
 
         st.markdown("<br>", unsafe_allow_html=True)
-        if pred == 1:
-            st.markdown(
-                f'<div class="pred-alto">'
-                f'<div class="pred-title">⚠️ RIESGO ALTO DE DESERCIÓN</div>'
-                f'<div style="font-size:1.1rem;margin-top:8px;">'
-                f'Probabilidad estimada: <b>{prob_alto:.1f}%</b></div>'
-                f'</div>',
-                unsafe_allow_html=True,
+
+        if len(df_similar) == 0:
+            st.warning(
+                "No se encontraron registros similares en el dataset para esta combinación. "
+                "Prueba con otra combinación de variables."
             )
         else:
-            st.markdown(
-                f'<div class="pred-bajo">'
-                f'<div class="pred-title">✅ RIESGO BAJO DE DESERCIÓN</div>'
-                f'<div style="font-size:1.1rem;margin-top:8px;">'
-                f'Probabilidad estimada de riesgo bajo: <b>{prob_bajo:.1f}%</b></div>'
-                f'</div>',
-                unsafe_allow_html=True,
+            n_similar   = len(df_similar)
+            prob_alto   = df_similar["PROB_RIESGO_ALTO"].mean()
+            prob_bajo   = 100 - prob_alto
+            pred_clase  = 1 if prob_alto >= 50 else 0
+
+            if pred_clase == 1:
+                st.markdown(
+                    f'<div class="pred-alto">'
+                    f'<div class="pred-title">⚠️ RIESGO ALTO DE DESERCIÓN</div>'
+                    f'<div style="font-size:1.1rem;margin-top:8px;">'
+                    f'Probabilidad estimada: <b>{prob_alto:.1f}%</b></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div class="pred-bajo">'
+                    f'<div class="pred-title">✅ RIESGO BAJO DE DESERCIÓN</div>'
+                    f'<div style="font-size:1.1rem;margin-top:8px;">'
+                    f'Probabilidad estimada de riesgo bajo: <b>{prob_bajo:.1f}%</b></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            fig_proba = go.Figure(go.Bar(
+                x=["Riesgo BAJO", "Riesgo ALTO"],
+                y=[prob_bajo, prob_alto],
+                marker_color=[COLOR_BAJO, COLOR_ALTO],
+                text=[f"{prob_bajo:.1f}%", f"{prob_alto:.1f}%"],
+                textposition="outside",
+                width=0.4,
+            ))
+            fig_proba.update_layout(
+                title="Probabilidades estimadas por clase",
+                yaxis=dict(title="Probabilidad (%)", range=[0, 115]),
+                height=320,
+                margin=dict(t=50, b=20),
+                showlegend=False,
             )
+            st.plotly_chart(fig_proba, use_container_width=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Gráfico de probabilidades
-        fig_proba = go.Figure(go.Bar(
-            x=["Riesgo BAJO", "Riesgo ALTO"],
-            y=[prob_bajo, prob_alto],
-            marker_color=[COLOR_BAJO, COLOR_ALTO],
-            text=[f"{prob_bajo:.1f}%", f"{prob_alto:.1f}%"],
-            textposition="outside",
-            width=0.4,
-        ))
-        fig_proba.update_layout(
-            title="Probabilidades estimadas por clase",
-            yaxis=dict(title="Probabilidad (%)", range=[0, 110]),
-            height=320,
-            margin=dict(t=50, b=20),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_proba, use_container_width=True)
-
-        st.info(
-            "ℹ️ La predicción se basa en el modelo de bosque aleatorio entrenado sobre "
-            "el dataset SNIES 2023. El modelo trabaja con datos agregados a nivel de "
-            "programa-perfil-semestre, no con datos individuales de estudiantes.",
-            icon=None,
-        )
+            st.info(
+                f"ℹ️ Resultado basado en **{n_similar:,} registros similares** del dataset SNIES 2023 "
+                f"(coincidencia {nivel_coincidencia}). "
+                "El modelo de Bosque Aleatorio fue entrenado sobre datos agregados a nivel de "
+                "programa-perfil-semestre, no sobre datos individuales de estudiantes.",
+                icon=None,
+            )
